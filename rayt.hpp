@@ -29,10 +29,14 @@ namespace rayt{
     const double EPS=1e-6;
     const double INF=std::numeric_limits<double>::max();
     const double GAMMA_FACTOR=2.2;
+    const int MAX_DEPTH=50;
+    const int NUM_THREAD=6;
 
     inline double radians(const double deg){return deg/180*PI;}
     inline double degrees(const double rad){return rad/PI*180;}
     inline double recip(double x){return 1.0/x;}
+    inline double pow2(double x){return x*x;}
+
     inline vec3 random_vector(){
         return vec3(drand48(),drand48(),drand48());
     }
@@ -45,6 +49,23 @@ namespace rayt{
         return p;
     }
 
+    inline vec3 reflect(const vec3& v,const vec3& n){
+        return v-2.0*dot(v,n)*n;
+    }
+
+    inline bool refract(const vec3&  v,const vec3& n,double ni_over_nt,vec3& refracted){
+        vec3 uv=normalize(v);
+        double dt=dot(uv,n);
+        double D=1-pow2(ni_over_nt)*(1-pow2(dt));
+
+        if(D>EPS){
+            refracted=-ni_over_nt*(uv-n*dt)-n*sqrt(D);
+            return true;
+        }
+        else{
+            return false;
+        }
+    }
 
     inline vec3 inverseGamma(const vec3& v,double gammaFactor){
         double recipGammaFactor=recip(gammaFactor);
@@ -196,7 +217,58 @@ namespace rayt{
         vec3 m_albedo;
     };
 
+    class Metal:public Material{
+        public:
+        Metal(const vec3& c,double fuzz):m_albedo(c),m_fuzz(fuzz){}
+
+        bool scatter(const Ray& r,const HitRec& hrec,ScatterRec& srec)const override{
+            vec3 reflected=reflect(normalize(r.direction()),hrec.n);
+            reflected+=m_fuzz*random_in_unit_sphere();
+            srec.ray=Ray(hrec.p,reflected);
+            srec.albedo=m_albedo;
+            return true;
+        }
+
+        private:
+        vec3 m_albedo;
+        double m_fuzz;
+    };
    
+
+    class Dielectric: public Material{
+        public:
+        Dielectric(double ri):m_ri(ri){}
+
+        bool scatter(const Ray& r,const HitRec& hrec,ScatterRec& srec)const override{
+            vec3 outward_normal;
+            vec3 reflected=reflect(r.direction(),hrec.n);
+            double ni_over_nt;
+
+            if(dot(r.direction(),hrec.n)>EPS){
+                outward_normal=-hrec.n;
+                ni_over_nt=m_ri;
+            }
+            else{
+                outward_normal=hrec.n;
+                ni_over_nt=recip(m_ri);
+            }
+
+            srec.albedo=vec3(1);
+
+            vec3 refracted;
+            if(refract(-r.direction(),outward_normal,ni_over_nt,refracted)){
+                srec.ray=Ray(hrec.p,refracted);
+                return true;
+            }
+            else{
+                srec.ray=Ray(hrec.p,reflected);
+                return false;
+            }
+
+        }
+        private:
+        double m_ri;
+    };
 
     class Shape{
         public:
@@ -223,6 +295,15 @@ namespace rayt{
 
             double root=sqrt(D);
             double tmp=(-b-root)/(2*a);
+            if(tmp+EPS<t1&&t0+EPS<tmp){
+                hrec.t=tmp;
+                hrec.p=r.at(hrec.t);
+                hrec.n=normalize(hrec.p-m_center);
+                hrec.mat=m_material;
+                return true;
+            }
+
+            tmp=(-b+root)/(2*a);
             if(tmp+EPS<t1&&t0+EPS<tmp){
                 hrec.t=tmp;
                 hrec.p=r.at(hrec.t);
@@ -284,9 +365,13 @@ namespace rayt{
 
             world->add(std::make_shared<Sphere>(
                 vec3(-0.6,0,-1),0.5,
-                std::make_shared<Lambertian>(vec3(0.8,0.0,0.0))
+                std::make_shared<Dielectric>(1.5)
             ));
             
+            world->add(std::make_shared<Sphere>(
+                vec3(0,-0.35,-0.8),0.15,
+                std::make_shared<Metal>(vec3(0.8,0.8,0.8),0.2)
+            ));
 
             world->add(std::make_shared<Sphere>(
                 vec3(0,-100.5,-1),100,
@@ -296,12 +381,12 @@ namespace rayt{
         }
 
 
-        vec3 color(const rayt::Ray& r,const Shape* world)const{
+        vec3 color(const rayt::Ray& r,const Shape* world,int depth)const{
             HitRec hrec;
-            if(world->hit(r,0,INF,hrec)){
+            if(world->hit(r,EPS,INF,hrec)){
                 ScatterRec srec;
-                if(hrec.mat->scatter(r,hrec,srec)){
-                    return mulPerElem(srec.albedo,color(srec.ray,world));
+                if(depth<MAX_DEPTH&&hrec.mat->scatter(r,hrec,srec)){
+                    return mulPerElem(srec.albedo,color(srec.ray,world,depth+1));
                 }
                 else{
                     return vec3(0);
@@ -319,7 +404,7 @@ namespace rayt{
             build();
             int W=m_image->width();
             int H=m_image->height();
-
+#pragma omp parallel for schedule(dynamic, 1) num_threads(NUM_THREAD)
             for(int y=0;y<H;y++){
                 for(int x=0;x<W;x++){
                     vec3 c(0);
@@ -327,7 +412,7 @@ namespace rayt{
                         double u=(x+drand48())/W;
                         double v=(y+drand48())/H;
                         Ray r=m_camera->getRay(u,v);
-                        c+=color(r,m_world.get());
+                        c+=color(r,m_world.get(),0);
                     }
                     c/=m_samples;
                     m_image->write(x,H-1-y,c.getX(),c.getY(),c.getZ());
