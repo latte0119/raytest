@@ -8,24 +8,36 @@
 #include "stb/stb_image.h"
 #include "stb/stb_image_write.h"
 
-using namespace Vectormath::Aos;
-using vec3=Vector3;
-using col3=Vector3;
-std::random_device seed_gen;
-std::default_random_engine engine(seed_gen());
-std::uniform_real_distribution<double>urd(0.0,1.0);
-inline double drand48(){
-    return urd(engine);
-}
-const double PI=acos(-1);
-const double EPS=1e-6;
-const double INF=std::numeric_limits<double>::max();
-inline double radians(const double deg){return deg/180*PI;}
-inline double degrees(const double rad){return rad/PI*180;}
 
 
 namespace rayt{
-    
+    using namespace Vectormath::Aos;
+    using vec3=Vector3;
+    using col3=Vector3;
+    std::random_device seed_gen;
+    std::default_random_engine engine(seed_gen());
+    std::uniform_real_distribution<double>urd(0.0,1.0);
+    inline double drand48(){
+        return urd(engine);
+    }
+    const double PI=acos(-1);
+    const double EPS=1e-6;
+    const double INF=std::numeric_limits<double>::max();
+    inline double radians(const double deg){return deg/180*PI;}
+    inline double degrees(const double rad){return rad/PI*180;}
+
+    inline vec3 random_vector(){
+        return vec3(drand48(),drand48(),drand48());
+    }
+
+    inline vec3 random_in_unit_sphere(){
+        vec3 p;
+        do{
+            p=2*random_vector()-vec3(1);
+        }while(lengthSqr(p)>1-EPS);
+        return p;
+    }
+
     class Image{
         public:
         struct rgb{
@@ -198,7 +210,8 @@ namespace rayt{
         vec3 color(const rayt::Ray& r,const Shape* world)const{
             HitRec hrec;
             if(world->hit(r,0,INF,hrec)){
-                return 0.5*(hrec.n+vec3(1.0));
+                vec3 target=hrec.p+hrec.n+random_in_unit_sphere();
+                return 0.5*color(Ray(hrec.p,target-hrec.p),world);
             }
             return backgroundSky(r.direction());
         }
@@ -226,7 +239,15 @@ namespace rayt{
                     m_image->write(x,H-1-y,c.getX(),c.getY(),c.getZ());
                 }
             }
-            stbi_write_bmp("render.bmp",W,H,sizeof(Image::rgb),m_image->pixels());
+            /*
+            for(int y=0;y<H;y++){
+                for(int x=0;x<W;x++){
+                    vec3 c=lerp(1.0*x/W,vec3(1),vec3(0.5,0.7,1.0));
+                    c*=0.5;
+                    m_image->write(x,y,c.getX(),c.getY(),c.getZ());
+                }
+            }*/
+            stbi_write_png("render.png",W,H,sizeof(Image::rgb),m_image->pixels(),W*sizeof(Image::rgb));
         }
 
         private:
