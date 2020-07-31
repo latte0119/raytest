@@ -83,6 +83,13 @@ namespace rayt{
         );
     }
 
+    inline void get_sphere_uv(const vec3& p,double& u,double& v){
+        double phi=atan2(p.getZ(),p.getX());
+        double theta=asin(p.getY());
+        u=1-(phi+PI)/(2*PI);
+        v=(theta+PI/2)/PI;
+    }
+
     class ImageFilter{
         public:
         virtual vec3 filter(const vec3& c)const=0;
@@ -182,10 +189,78 @@ namespace rayt{
 
 
   
+    class Texture{
+        public:
+        virtual vec3 value(double u,double v,const vec3& p)const=0;
+    };
+
+    class ColorTexture:public Texture{
+        public:
+        ColorTexture(const vec3& c):m_color(c){}
+
+        vec3 value(double u,double v,const vec3& p)const override{
+            return m_color;
+        }
+        private:
+        vec3 m_color;
+    };
+    using TexturePtr=std::shared_ptr<Texture>;
+
+
+    class CheckerTexture:public Texture{
+        public:
+        CheckerTexture(const TexturePtr& t0,const TexturePtr& t1,double freq):m_odd(t0),m_even(t1),m_freq(freq){}
+
+        vec3 value(double u,double v,const vec3& p)const override{
+            double sines=sin(m_freq*p.getX())*sin(m_freq*p.getY())*sin(m_freq*p.getZ());
+
+            if(sines<0)return m_odd->value(u,v,p);
+            else return m_even->value(u,v,p);
+        }
+        private:
+        TexturePtr m_odd;
+        TexturePtr m_even;
+        double m_freq;
+    };
+
+    class ImageTexture: public Texture{
+        public:
+        ImageTexture(const char* name){
+            int nn;
+            m_texels=stbi_load(name,&m_width,&m_height,&nn,0);
+        }
+        ~ImageTexture(){
+            stbi_image_free(m_texels);
+        }
+
+        vec3 value(double u,double v,const vec3& p)const override{
+            int i=u*m_width;
+            int j=(1-v)*m_height;
+            return sample(i,j);
+        }
+
+        vec3 sample(int u,int v)const{
+            u=u<0?0:u>=m_width?m_width-1:u;
+            v=v<0?0:v>=m_height?m_height-1:v;
+
+            return vec3(
+                int(m_texels[3*(u+m_width*v)])/255.0,
+                int(m_texels[3*(u+m_width*v)])/255.0,
+                int(m_texels[3*(u+m_width*v)])/255.0
+            );
+        }
+
+        private:
+        int m_width;
+        int m_height;
+        unsigned char* m_texels;
+    };
 
     class HitRec{
         public:
         double t;
+        double u;
+        double v;
         vec3 p;
         vec3 n;
         MaterialPtr mat;
@@ -203,7 +278,8 @@ namespace rayt{
 
     class Material{
         public:
-        virtual bool scatter(const Ray&r ,const HitRec& hrec,ScatterRec& srec)const=0;
+        virtual bool scatter(const Ray&r,const HitRec& hrec,ScatterRec& srec)const=0;
+        virtual vec3 emitted(const Ray&r,const HitRec& hrec)const{return vec3(0);}
     };
     using MaterialPtr=std::shared_ptr<Material>;
 
@@ -211,33 +287,33 @@ namespace rayt{
     class Lambertian:public Material{
         public:
 
-        Lambertian(const vec3& c):m_albedo(c){}
+        Lambertian(const TexturePtr& a):m_albedo(a){}
 
         bool scatter(const Ray& r,const HitRec& hrec,ScatterRec& srec)const override{
             vec3 target=hrec.p+hrec.n+random_in_unit_sphere();
             srec.ray=Ray(hrec.p,target-hrec.p);
-            srec.albedo=m_albedo;
+            srec.albedo=m_albedo->value(hrec.u,hrec.v,hrec.p);
             return true;
         }
 
         private:
-        vec3 m_albedo;
+        TexturePtr m_albedo;
     };
 
     class Metal:public Material{
         public:
-        Metal(const vec3& c,double fuzz):m_albedo(c),m_fuzz(fuzz){}
+        Metal(const TexturePtr& a,double fuzz):m_albedo(a),m_fuzz(fuzz){}
 
         bool scatter(const Ray& r,const HitRec& hrec,ScatterRec& srec)const override{
             vec3 reflected=reflect(normalize(r.direction()),hrec.n);
             reflected+=m_fuzz*random_in_unit_sphere();
             srec.ray=Ray(hrec.p,reflected);
-            srec.albedo=m_albedo;
+            srec.albedo=m_albedo->value(hrec.u,hrec.v,hrec.p);
             return true;
         }
 
         private:
-        vec3 m_albedo;
+        TexturePtr m_albedo;
         double m_fuzz;
     };
    
@@ -286,6 +362,22 @@ namespace rayt{
         double m_ri;
     };
 
+    class DiffuseLight:public Material{
+        public:
+        DiffuseLight(const TexturePtr& emit):m_emit(emit){}
+
+        bool scatter(const Ray& r,const HitRec& hrec,ScatterRec& srec)const override{
+            return false;
+        }
+
+        vec3 emitted(const Ray& r,const HitRec& hrec)const override{
+            return m_emit->value(hrec.u,hrec.v,hrec.p);
+        }
+
+        private:
+        TexturePtr m_emit;
+    };
+
     class Shape{
         public:
         virtual bool hit(const Ray& r,double t0,double t1,HitRec& hrec)const=0;
@@ -316,6 +408,7 @@ namespace rayt{
                 hrec.p=r.at(hrec.t);
                 hrec.n=(hrec.p-m_center)/m_radius;
                 hrec.mat=m_material;
+                get_sphere_uv(hrec.p-m_center,hrec.u,hrec.v);
                 return true;
             }
 
@@ -325,6 +418,7 @@ namespace rayt{
                 hrec.p=r.at(hrec.t);
                 hrec.n=(hrec.p-m_center)/m_radius;
                 hrec.mat=m_material;
+                get_sphere_uv(hrec.p-m_center,hrec.u,hrec.v);
                 return true;
             }
             return false;
@@ -367,44 +461,22 @@ namespace rayt{
         public:
         Scene(int width,int height,int samples):m_image(std::make_unique<Image>(width,height)),m_backColor(0.2),m_samples(samples){}
         void build(){
-            vec3 lookfrom(13,2,3);
-            vec3 lookat(0,0,0);
-            vec3 vup(0,1,0);
-            double aspect = 1.0*m_image->width() /m_image->height();
-            m_camera = std::make_unique<Camera>(lookfrom, lookat, vup, 20, aspect);
-            
+                        
+            vec3 w(-2.0f, -1.0f, -1.0f);
+            vec3 u(4.0f, 0.0f, 0.0f);
+            vec3 v(0.0f, 2.0f, 0.0f);
+            m_camera = std::make_unique<Camera>(u, v, w);
+
+            // Shapes
             ShapeList* world = new ShapeList();
-
-            int N = 11;
-            for (int i=-N; i<N; ++i) {
-                for (int j=-N; j<N; ++j) {
-                    float choose_mat = drand48();
-                    vec3 center(i+0.9f*drand48(), 0.2f, j+0.9f*drand48());
-                    if (length(center-vec3(4,0.2,0)) > 0.9f) {
-                        if (choose_mat < 0.8f) {
-                            world->add(std::make_shared<Sphere>(
-                                center, 0.2f, 
-                                std::make_shared<Lambertian>(mulPerElem(random_vector(),random_vector()))));
-                        }
-                        else if (choose_mat < 0.95f) {
-                            world->add(std::make_shared<Sphere>(
-                                center, 0.2f,
-                                std::make_shared<Metal>(0.5f * (random_vector()+vec3(1)), 0.5f*drand48())));
-                        }
-                        else {
-                            world->add(std::make_shared<Sphere>(
-                                center, 0.2f,
-                                std::make_shared<Dielectric>(1.5f)));
-                        }
-                    }
-                }
-            }
-
-
             world->add(std::make_shared<Sphere>(
-                vec3(0, -1000, -1), 1000,
-                std::make_shared<Lambertian>(vec3(0.5, 0.5, 0.5))));
-
+                vec3(0, 0, -1), 0.5f,
+                std::make_shared<DiffuseLight>(
+                    std::make_shared<ColorTexture>(vec3(1)))));
+            world->add(std::make_shared<Sphere>(
+                vec3(0, -100.5, -1), 100,
+                std::make_shared<Lambertian>(
+                    std::make_shared<ColorTexture>(vec3(0.8f, 0.8f, 0.8f)))));
             m_world.reset(world);
         }
 
@@ -412,20 +484,25 @@ namespace rayt{
         vec3 color(const rayt::Ray& r,const Shape* world,int depth)const{
             HitRec hrec;
             if(world->hit(r,EPS,INF,hrec)){
+                vec3 emitted=hrec.mat->emitted(r,hrec);
                 ScatterRec srec;
                 if(depth<MAX_DEPTH&&hrec.mat->scatter(r,hrec,srec)){
-                    return mulPerElem(srec.albedo,color(srec.ray,world,depth+1));
+                    return emitted+mulPerElem(srec.albedo,color(srec.ray,world,depth+1));
                 }
                 else{
-                    return vec3(0);
+                    return emitted;
                 }
             }
-            return backgroundSky(r.direction());
+            return background(r.direction());
         }
         vec3 backgroundSky(const vec3& d)const{
             vec3 v=normalize(d);
             double t=0.5*(v.getY()+1.0);
             return lerp(t,vec3(1),vec3(0.5,0.7,1.0));
+        }
+
+        vec3 background(const vec3& d)const{
+            return m_backColor;
         }
 
         void render(){
