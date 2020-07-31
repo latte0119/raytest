@@ -1,6 +1,7 @@
 #include<memory>
 #include<random>
 #include<vector>
+#include<iostream>
 #include<numeric>
 #include "sce_vectormath/include/vectormath/scalar/cpp/vectormath_aos.h"
 #define STB_IMAGE_IMPLEMENTATION
@@ -36,6 +37,7 @@ namespace rayt{
     inline double degrees(const double rad){return rad/PI*180;}
     inline double recip(double x){return 1.0/x;}
     inline double pow2(double x){return x*x;}
+    inline double pow5(double x){return x*x*x*x*x;}
 
     inline vec3 random_vector(){
         return vec3(drand48(),drand48(),drand48());
@@ -65,6 +67,11 @@ namespace rayt{
         else{
             return false;
         }
+    }
+
+    inline double schlick(double cosine,double ri){
+        double r0=pow2((1-ri)/(1+ri));
+        return r0+(1-r0)*pow5(1-cosine);
     }
 
     inline vec3 inverseGamma(const vec3& v,double gammaFactor){
@@ -150,7 +157,7 @@ namespace rayt{
         }
 
         Camera(const vec3& lookfrom,const vec3& lookat, const vec3& vup,double vfov,double aspect){
-            const vec3 Z=normalize(lookat-lookfrom);
+            const vec3 Z=normalize(lookfrom-lookat);
             const vec3 X=normalize(cross(vup,Z));
             const vec3 Y=cross(Z,X);
 
@@ -243,6 +250,8 @@ namespace rayt{
             vec3 outward_normal;
             vec3 reflected=reflect(r.direction(),hrec.n);
             double ni_over_nt;
+            double reflect_prob;
+            double cosine;
 
             if(dot(r.direction(),hrec.n)>EPS){
                 outward_normal=-hrec.n;
@@ -252,19 +261,26 @@ namespace rayt{
                 outward_normal=hrec.n;
                 ni_over_nt=recip(m_ri);
             }
+            cosine=abs(dot(r.direction(),hrec.n))/length(r.direction());
 
             srec.albedo=vec3(1);
 
             vec3 refracted;
             if(refract(-r.direction(),outward_normal,ni_over_nt,refracted)){
-                srec.ray=Ray(hrec.p,refracted);
-                return true;
+                reflect_prob=schlick(cosine,m_ri);
             }
             else{
-                srec.ray=Ray(hrec.p,reflected);
-                return false;
+                reflect_prob=1;
             }
 
+
+            if(drand48()<reflect_prob){
+                srec.ray=Ray(hrec.p,reflected);
+            }
+            else{
+                srec.ray=Ray(hrec.p,refracted);
+            }
+            return true;
         }
         private:
         double m_ri;
@@ -298,7 +314,7 @@ namespace rayt{
             if(tmp+EPS<t1&&t0+EPS<tmp){
                 hrec.t=tmp;
                 hrec.p=r.at(hrec.t);
-                hrec.n=normalize(hrec.p-m_center);
+                hrec.n=(hrec.p-m_center)/m_radius;
                 hrec.mat=m_material;
                 return true;
             }
@@ -307,7 +323,7 @@ namespace rayt{
             if(tmp+EPS<t1&&t0+EPS<tmp){
                 hrec.t=tmp;
                 hrec.p=r.at(hrec.t);
-                hrec.n=normalize(hrec.p-m_center);
+                hrec.n=(hrec.p-m_center)/m_radius;
                 hrec.mat=m_material;
                 return true;
             }
@@ -351,32 +367,44 @@ namespace rayt{
         public:
         Scene(int width,int height,int samples):m_image(std::make_unique<Image>(width,height)),m_backColor(0.2),m_samples(samples){}
         void build(){
-            vec3 w(-2.0,-1.0,-1.0);
-            vec3 u(4.0,0.0,0.0);
-            vec3 v(0.0,2.0,0.0);
-            m_camera=std::make_unique<Camera>(u,v,w);
-
-
-            ShapeList* world=new ShapeList();
-            world->add(std::make_shared<Sphere>(
-                vec3(0.6,0,-1),0.5,
-                std::make_shared<Lambertian>(vec3(0.1,0.2,0.5))
-            ));
-
-            world->add(std::make_shared<Sphere>(
-                vec3(-0.6,0,-1),0.5,
-                std::make_shared<Dielectric>(1.5)
-            ));
+            vec3 lookfrom(13,2,3);
+            vec3 lookat(0,0,0);
+            vec3 vup(0,1,0);
+            double aspect = 1.0*m_image->width() /m_image->height();
+            m_camera = std::make_unique<Camera>(lookfrom, lookat, vup, 20, aspect);
             
-            world->add(std::make_shared<Sphere>(
-                vec3(0,-0.35,-0.8),0.15,
-                std::make_shared<Metal>(vec3(0.8,0.8,0.8),0.2)
-            ));
+            ShapeList* world = new ShapeList();
+
+            int N = 11;
+            for (int i=-N; i<N; ++i) {
+                for (int j=-N; j<N; ++j) {
+                    float choose_mat = drand48();
+                    vec3 center(i+0.9f*drand48(), 0.2f, j+0.9f*drand48());
+                    if (length(center-vec3(4,0.2,0)) > 0.9f) {
+                        if (choose_mat < 0.8f) {
+                            world->add(std::make_shared<Sphere>(
+                                center, 0.2f, 
+                                std::make_shared<Lambertian>(mulPerElem(random_vector(),random_vector()))));
+                        }
+                        else if (choose_mat < 0.95f) {
+                            world->add(std::make_shared<Sphere>(
+                                center, 0.2f,
+                                std::make_shared<Metal>(0.5f * (random_vector()+vec3(1)), 0.5f*drand48())));
+                        }
+                        else {
+                            world->add(std::make_shared<Sphere>(
+                                center, 0.2f,
+                                std::make_shared<Dielectric>(1.5f)));
+                        }
+                    }
+                }
+            }
+
 
             world->add(std::make_shared<Sphere>(
-                vec3(0,-100.5,-1),100,
-                std::make_shared<Lambertian>(vec3(0.8,0.8,0.0))
-            ));
+                vec3(0, -1000, -1), 1000,
+                std::make_shared<Lambertian>(vec3(0.5, 0.5, 0.5))));
+
             m_world.reset(world);
         }
 

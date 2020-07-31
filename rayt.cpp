@@ -7,7 +7,7 @@ int main(){
     std::chrono::system_clock::time_point start,end;
     start=std::chrono::system_clock::now();
 
-    rayt::Scene s(200,100,100);
+    rayt::Scene s(200,100,50);
     s.build();
     s.render();
 
