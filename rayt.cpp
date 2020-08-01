@@ -1,19 +1,19 @@
 #include "rayt.hpp"
-#include<memory>
-#include<iostream>
-#include<chrono>
 
-int main(){
-    std::chrono::system_clock::time_point start,end;
-    start=std::chrono::system_clock::now();
+#include <chrono>
+#include <iostream>
+#include <memory>
 
-    rayt::Scene s(200,100,50);
-    s.build();
+int main() {
+    std::chrono::system_clock::time_point start, end;
+    start = std::chrono::system_clock::now();
+
+    rayt::Scene s(100, 100, 500);
     s.render();
 
-    end=std::chrono::system_clock::now();
-    double time=static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(end-start).count()/1000.0);
-    printf("%f\n",time);
+    end = std::chrono::system_clock::now();
+    double time = static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() / 1000.0);
+    printf("%f\n", time);
 
     return 0;
 }
