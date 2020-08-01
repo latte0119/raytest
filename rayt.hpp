@@ -86,14 +86,57 @@ inline void get_sphere_uv(const vec3 &p, double &u, double &v) {
     v = (theta + PI / 2) / PI;
 }
 
-/*
 inline vec3 random_cosine_direction() {
     double r1 = drand48();
     double r2 = drand48();
 
     double z = sqrt(1 - r2);
+    double phi = 2 * PI * r1;
+
+    double x = cos(phi) * sqrt(r2);
+    double y = sin(phi) * sqrt(r2);
+    return vec3(x, y, z);
 }
-*/
+
+class ONB {
+   public:
+    ONB() {}
+    inline vec3 &operator[](int i) {
+        return m_axis[i];
+    }
+    inline const vec3 &operator[](int i) const {
+        return m_axis[i];
+    }
+    const vec3 &u() const {
+        return m_axis[0];
+    }
+    const vec3 &v() const {
+        return m_axis[1];
+    }
+    const vec3 &w() const {
+        return m_axis[2];
+    }
+    vec3 local(double a, double b, double c) const {
+        return a * u() + b * v() + c * w();
+    }
+    vec3 local(const vec3 &a) const {
+        return a.getX() * u() + a.getY() * v() + a.getZ() * w();
+    }
+    void build_from_w(const vec3 &n) {
+        m_axis[2] = normalize(n);
+        vec3 a;
+        if (abs(w().getX()) > 0.9) {
+            a = vec3(0, 1, 0);
+        } else {
+            a = vec3(1, 0, 0);
+        }
+        m_axis[1] = normalize(cross(w(), a));
+        m_axis[0] = cross(w(), v());
+    }
+
+   private:
+    vec3 m_axis[3];
+};
 
 class ImageFilter {
    public:
@@ -301,10 +344,13 @@ class Lambertian : public Material {
     Lambertian(const TexturePtr &a) : m_albedo(a) {}
 
     bool scatter(const Ray &r, const HitRec &hrec, ScatterRec &srec) const override {
-        vec3 target = hrec.p + hrec.n + random_in_unit_sphere();
-        srec.ray = Ray(hrec.p, target - hrec.p);
+        ONB onb;
+        onb.build_from_w(hrec.n);
+        vec3 direction = onb.local(random_cosine_direction());
+        direction = normalize(direction);  //uuuu
+        srec.ray = Ray(hrec.p, direction);
         srec.albedo = m_albedo->value(hrec.u, hrec.v, hrec.p);
-        srec.pdf_value = dot(hrec.n, normalize(srec.ray.direction())) / PI;
+        srec.pdf_value = dot(hrec.n, srec.ray.direction()) / PI;
         return true;
     }
 
@@ -464,6 +510,9 @@ class Rect : public Shape {
             case kXY:
                 xi = 0;
                 yi = 1;
+                zi = 2;
+                axis = vec3::zAxis();
+                break;
             case kXZ:
                 xi = 0;
                 yi = 2;
@@ -753,14 +802,17 @@ class Scene {
         world->add(builder.rectXZ(0, 555, 0, 555, 555, white).flip().get());
         world->add(builder.rectXZ(0, 555, 0, 555, 0, white).get());
         world->add(builder.rectXY(0, 555, 0, 555, 555, white).flip().get());
+
         world->add(builder.box(vec3(0), vec3(165), white)
                        .rotate(vec3::yAxis(), -18)
                        .translate(vec3(130, 0, 65))
                        .get());
+
         world->add(builder.box(vec3(0), vec3(165, 330, 165), white)
                        .rotate(vec3::yAxis(), 15)
                        .translate(vec3(265, 0, 295))
                        .get());
+
         m_world.reset(world);
     }
 
@@ -770,9 +822,9 @@ class Scene {
             vec3 emitted = hrec.mat->emitted(r, hrec);
             ScatterRec srec;
 
-            if (depth < MAX_DEPTH && hrec.mat->scatter(r, hrec, srec)) {
-                vec3 albedo = srec.albedo;
-                return emitted + mulPerElem(albedo, color(srec.ray, world, depth + 1));
+            if (depth < MAX_DEPTH && hrec.mat->scatter(r, hrec, srec) && srec.pdf_value > 0) {
+                vec3 albedo = srec.albedo * hrec.mat->scattering_pdf(srec.ray, hrec);
+                return emitted + mulPerElem(albedo, color(srec.ray, world, depth + 1)) / srec.pdf_value;
             } else {
                 return emitted;
             }
@@ -796,6 +848,7 @@ class Scene {
         int H = m_image->height();
 #pragma omp parallel for schedule(dynamic, 1) num_threads(NUM_THREAD)
         for (int y = 0; y < H; y++) {
+            std::cout << y << std::endl;
             for (int x = 0; x < W; x++) {
                 vec3 c(0);
                 for (int s = 0; s < m_samples; s++) {
